@@ -1,0 +1,342 @@
+test
+import pygame
+import random
+import math
+
+SCREEN_WIDTH = 800
+SCREEN_HEIGHT = 600
+TILE_SIZE = 40
+WORLD_WIDTH = 200
+WORLD_HEIGHT = 60
+
+SKY_COLOR = (135, 206, 235)
+DIRT_COLOR = (155, 118, 83)
+GRASS_COLOR = (106, 190, 48)
+STONE_COLOR = (100, 100, 100)
+PLAYER_COLOR = (255, 0, 0)
+SNOW_COLOR = (240, 240, 255)
+ICE_COLOR = (150, 200, 255)
+WOOD_COLOR = (133, 94, 66)
+LEAVES_COLOR = (34, 139, 34)
+HELL_STONE_COLOR = (100, 20, 20)
+LAVA_COLOR = (255, 100, 0)
+COCOON_COLOR = (180, 0, 255)
+ENEMY_COLOR = (0, 255, 100)
+BULLET_COLOR = (255, 255, 0)
+
+BLOCK_AIR = 0
+BLOCK_DIRT = 1
+BLOCK_GRASS = 2
+BLOCK_STONE = 3
+BLOCK_SNOW = 4
+BLOCK_ICE = 5
+BLOCK_WOOD = 6
+BLOCK_LEAVES = 7
+BLOCK_HELL_STONE = 8
+BLOCK_LAVA = 9
+BLOCK_COCOON = 10
+
+pygame.init()
+screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
+pygame.display.set_caption("Terraria Clone — Green Swarm Edition + Inventory")
+clock = pygame.time.Clock()
+font = pygame.font.SysFont("arial", 24, bold=True)
+
+world = [[BLOCK_AIR for _ in range(WORLD_WIDTH)] for _ in range(WORLD_HEIGHT)]
+surface_height = WORLD_HEIGHT // 3
+hell_start_y = WORLD_HEIGHT - 10
+
+for y in range(WORLD_HEIGHT):
+    for x in range(WORLD_WIDTH):
+        if y >= hell_start_y:
+            world[y][x] = BLOCK_LAVA if random.random() < 0.1 else BLOCK_HELL_STONE
+        else:
+            if y == surface_height:
+                world[y][x] = BLOCK_GRASS if x < 100 else BLOCK_SNOW
+            elif y > surface_height:
+                if random.random() < 0.05:
+                    world[y][x] = BLOCK_AIR
+                else:
+                    if x < 100:
+                        world[y][x] = BLOCK_DIRT if random.random() > 0.1 else BLOCK_STONE
+                    else:
+                        world[y][x] = BLOCK_SNOW if random.random() > 0.1 else BLOCK_ICE
+            else:
+                world[y][x] = BLOCK_AIR
+
+def generate_tree(base_x):
+    height = random.randint(4, 6)
+    for h in range(height):
+        wy = surface_height - 1 - h
+        if wy >= 0:
+            world[wy][base_x] = BLOCK_WOOD
+    leaf_radius = 2
+    top = surface_height - height - 1
+    for xx in range(base_x - leaf_radius, base_x + leaf_radius + 1):
+        for yy in range(top, top + leaf_radius + 1):
+            if 0 <= xx < WORLD_WIDTH and 0 <= yy < WORLD_HEIGHT:
+                if world[yy][xx] == BLOCK_AIR:
+                    world[yy][xx] = BLOCK_LEAVES
+
+for x in range(5, WORLD_WIDTH - 5, 15):
+    if random.random() < 0.7:
+        generate_tree(x)
+
+for y in range(WORLD_HEIGHT - 1, -1, -1):
+    if world[y][WORLD_WIDTH - 10] != BLOCK_AIR and world[y][WORLD_WIDTH - 10] != BLOCK_LAVA:
+        world[y - 1][WORLD_WIDTH - 10] = BLOCK_COCOON
+        break
+
+spawn_x = 100
+spawn_y = 0
+for y in range(WORLD_HEIGHT):
+    if world[y][spawn_x // TILE_SIZE] in (BLOCK_GRASS, BLOCK_SNOW, BLOCK_DIRT, BLOCK_STONE):
+        spawn_y = y * TILE_SIZE - TILE_SIZE
+        break
+
+player = pygame.Rect(spawn_x, spawn_y, TILE_SIZE // 2, TILE_SIZE)
+player_vel_y = 0
+on_ground = False
+player_hp = 100
+max_hp = 100
+
+inventory = {BLOCK_DIRT: 0, BLOCK_STONE: 0, BLOCK_WOOD: 0, BLOCK_LEAVES: 0, BLOCK_SNOW: 0, BLOCK_ICE: 0}
+selected_block = BLOCK_DIRT
+inventory_slots = list(inventory.keys())
+selected_index = 0
+
+camera_x = 0
+camera_y = 0
+
+enemies = []
+enemy_bullets = []
+enemy_shoot_timer = 0
+enemies_active = False
+spawn_text_timer = 0
+
+hit_counts = {}
+cocoon_hits = 0
+
+def get_tile(pos):
+    x, y = pos
+    tile_x = (x + camera_x) // TILE_SIZE
+    tile_y = (y + camera_y) // TILE_SIZE
+    if 0 <= tile_x < WORLD_WIDTH and 0 <= tile_y < WORLD_HEIGHT:
+        return tile_x, tile_y
+    return None
+
+running = True
+while running:
+    dt = clock.tick(60)
+    screen.fill(SKY_COLOR)
+
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            running = False
+
+        if event.type == pygame.MOUSEBUTTONDOWN:
+            mouse_pos = pygame.mouse.get_pos()
+            tile_coords = get_tile(mouse_pos)
+            if tile_coords:
+                tx, ty = tile_coords
+                blk = world[ty][tx]
+
+                if blk == BLOCK_WOOD:
+                    key = (tx, ty)
+                    hit_counts[key] = hit_counts.get(key, 0) + 1
+                    if hit_counts[key] >= 3:
+                        for xx in range(tx - 2, tx + 3):
+                            for yy in range(ty - 6, ty + 3):
+                                if 0 <= xx < WORLD_WIDTH and 0 <= yy < WORLD_HEIGHT:
+                                    b = world[yy][xx]
+                                    if b in (BLOCK_WOOD, BLOCK_LEAVES):
+                                        if b in inventory:
+                                            inventory[b] += 1
+                                        world[yy][xx] = BLOCK_AIR
+                        hit_counts.pop(key, None)
+
+                elif blk == BLOCK_COCOON:
+                    cocoon_hits += 1
+                    if cocoon_hits >= 10 and not enemies_active:
+                        enemies_active = True
+                        spawn_text_timer = 180
+                        for i in range(5):
+                            x = WORLD_WIDTH * TILE_SIZE - 500 + i * 80
+                            y = 200 + i * 30
+                            enemies.append({"rect": pygame.Rect(x, y, 50, 50), "hp": 5})
+
+                else:
+                    if enemies_active:
+                        mouse_rect = pygame.Rect(mouse_pos[0] + camera_x, mouse_pos[1] + camera_y, 1, 1)
+                        for enemy in enemies[:]:
+                            if enemy["rect"].colliderect(mouse_rect):
+                                enemy["hp"] -= 1
+                                if enemy["hp"] <= 0:
+                                    enemies.remove(enemy)
+
+                    if event.button == 1:
+                        destroyed = world[ty][tx]
+                        world[ty][tx] = BLOCK_AIR
+                        if destroyed in inventory:
+                            inventory[destroyed] += 1
+
+                    elif event.button == 3:
+                        if inventory[selected_block] > 0 and world[ty][tx] == BLOCK_AIR:
+                            world[ty][tx] = selected_block
+                            inventory[selected_block] -= 1
+
+    keys = pygame.key.get_pressed()
+    dx = 0
+    if keys[pygame.K_a]:
+        dx = -5
+    if keys[pygame.K_d]:
+        dx = 5
+    if keys[pygame.K_SPACE] and on_ground:
+        player_vel_y = -12
+        on_ground = False
+
+    for i in range(6):
+        if keys[getattr(pygame, f'K_{i+1}')]:
+            selected_index = i
+            selected_block = inventory_slots[selected_index]
+
+    player_vel_y += 0.5
+    if player_vel_y > 10:
+        player_vel_y = 10
+
+    player.x += dx
+    for y in range(WORLD_HEIGHT):
+        for x in range(WORLD_WIDTH):
+            tile = world[y][x]
+            if tile not in (BLOCK_AIR, BLOCK_LAVA):
+                tile_rect = pygame.Rect(x * TILE_SIZE, y * TILE_SIZE, TILE_SIZE, TILE_SIZE)
+                if player.colliderect(tile_rect):
+                    if dx > 0:
+                        player.right = tile_rect.left
+                    elif dx < 0:
+                        player.left = tile_rect.right
+
+    player.y += int(player_vel_y)
+    on_ground = False
+    for y in range(WORLD_HEIGHT):
+        for x in range(WORLD_WIDTH):
+            tile = world[y][x]
+            if tile not in (BLOCK_AIR, BLOCK_LAVA):
+                tile_rect = pygame.Rect(x * TILE_SIZE, y * TILE_SIZE, TILE_SIZE, TILE_SIZE)
+                if player.colliderect(tile_rect):
+                    if player_vel_y > 0:
+                        player.bottom = tile_rect.top
+                        player_vel_y = 0
+                        on_ground = True
+                    elif player_vel_y < 0:
+                        player.top = tile_rect.bottom
+                        player_vel_y = 0
+
+    if enemies_active:
+        for e in enemies:
+            rect = e["rect"]
+            dx_e = player.centerx - rect.centerx
+            dy_e = player.centery - rect.centery
+            dist = math.hypot(dx_e, dy_e)
+            if dist > 0:
+                rect.x += int(dx_e / dist * 2)
+                rect.y += int(dy_e / dist * 2)
+
+        enemy_shoot_timer += 1
+        if enemy_shoot_timer > 60:
+            enemy_shoot_timer = 0
+            for e in enemies:
+                rect = e["rect"]
+                dx_b = player.centerx - rect.centerx
+                dy_b = player.centery - rect.centery
+                length = math.hypot(dx_b, dy_b)
+                if length != 0:
+                    dx_b /= length
+                    dy_b /= length
+                enemy_bullets.append([rect.centerx, rect.centery, dx_b * 6, dy_b * 6])
+
+        for bullet in enemy_bullets[:]:
+            bullet[0] += bullet[2]
+            bullet[1] += bullet[3]
+            br = pygame.Rect(bullet[0], bullet[1], 6, 6)
+            if br.colliderect(player):
+                player_hp -= 5
+                enemy_bullets.remove(bullet)
+            elif bullet[0] < 0 or bullet[1] < 0 or bullet[0] > WORLD_WIDTH * TILE_SIZE or bullet[1] > WORLD_HEIGHT * TILE_SIZE:
+                enemy_bullets.remove(bullet)
+
+        if player_hp <= 0:
+            running = False
+
+    camera_x = player.centerx - SCREEN_WIDTH // 2
+    camera_y = player.centery - SCREEN_HEIGHT // 2
+    camera_x = max(0, min(camera_x, WORLD_WIDTH * TILE_SIZE - SCREEN_WIDTH))
+    camera_y = max(0, min(camera_y, WORLD_HEIGHT * TILE_SIZE - SCREEN_HEIGHT))
+
+    start_x = camera_x // TILE_SIZE
+    end_x = (camera_x + SCREEN_WIDTH) // TILE_SIZE + 1
+    start_y = camera_y // TILE_SIZE
+    end_y = (camera_y + SCREEN_HEIGHT) // TILE_SIZE + 1
+
+    for y in range(start_y, end_y):
+        for x in range(start_x, end_x):
+            if 0 <= x < WORLD_WIDTH and 0 <= y < WORLD_HEIGHT:
+                tile = world[y][x]
+                if tile != BLOCK_AIR:
+                    rect = pygame.Rect(x * TILE_SIZE - camera_x, y * TILE_SIZE - camera_y, TILE_SIZE, TILE_SIZE)
+                    if tile == BLOCK_DIRT:
+                        color = DIRT_COLOR
+                    elif tile == BLOCK_GRASS:
+                        color = GRASS_COLOR
+                    elif tile == BLOCK_STONE:
+                        color = STONE_COLOR
+                    elif tile == BLOCK_SNOW:
+                        color = SNOW_COLOR
+                    elif tile == BLOCK_ICE:
+                        color = ICE_COLOR
+                    elif tile == BLOCK_WOOD:
+                        color = WOOD_COLOR
+                    elif tile == BLOCK_LEAVES:
+                        color = LEAVES_COLOR
+                    elif tile == BLOCK_HELL_STONE:
+                        color = HELL_STONE_COLOR
+                    elif tile == BLOCK_LAVA:
+                        color = LAVA_COLOR
+                    elif tile == BLOCK_COCOON:
+                        color = COCOON_COLOR
+                    else:
+                        color = (255, 0, 255)
+                    pygame.draw.rect(screen, color, rect)
+
+    pygame.draw.rect(screen, PLAYER_COLOR, 
+                     pygame.Rect(player.x - camera_x, player.y - camera_y, player.width, player.height))
+
+    if enemies_active:
+        for e in enemies:
+            rect = e["rect"]
+            pygame.draw.rect(screen, ENEMY_COLOR, pygame.Rect(rect.x - camera_x, rect.y - camera_y, rect.width, rect.height))
+        for bullet in enemy_bullets:
+            pygame.draw.rect(screen, BULLET_COLOR, pygame.Rect(bullet[0] - camera_x, bullet[1] - camera_y, 6, 6))
+
+    if spawn_text_timer > 0:
+        text_surf = font.render("Enemies have arrived!", True, (255, 0, 0))
+        screen.blit(text_surf, (SCREEN_WIDTH//2 - text_surf.get_width()//2, 50))
+        spawn_text_timer -= 1
+
+    for i, block in enumerate(inventory_slots):
+        x = 10 + i * 60
+        y = SCREEN_HEIGHT - 50
+        pygame.draw.rect(screen, (200, 200, 200) if i == selected_index else (100, 100, 100), (x, y, 50, 50))
+        color_map = {BLOCK_DIRT: DIRT_COLOR, BLOCK_STONE: STONE_COLOR, BLOCK_WOOD: WOOD_COLOR,
+                     BLOCK_LEAVES: LEAVES_COLOR, BLOCK_SNOW: SNOW_COLOR, BLOCK_ICE: ICE_COLOR}
+        pygame.draw.rect(screen, color_map.get(block, (255, 0, 255)), (x+5, y+5, 40, 40))
+        text_surf = font.render(str(inventory[block]), True, (0, 0, 0))
+        screen.blit(text_surf, (x + 15, y + 15))
+
+    hp_bar_width = 200
+    pygame.draw.rect(screen, (100, 0, 0), (10, 10, hp_bar_width, 20))
+    pygame.draw.rect(screen, (255, 0, 0), (10, 10, hp_bar_width * player_hp // max_hp, 20))
+
+    pygame.display.flip()
+
+pygame.quit()
